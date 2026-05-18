@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -66,7 +64,19 @@ func main() {
 
 	state := &AgentState{}
 
-	scanner := bufio.NewScanner(os.Stdin)
+	runInteractiveAgent(
+		ctx,
+		session,
+		state,
+		toolsResult.Tools,
+	)
+}
+func runInteractiveAgent(
+	ctx context.Context,
+	session *mcp.ClientSession,
+	state *AgentState,
+	tools []*mcp.Tool,
+) {
 
 	fmt.Println("=== AI Stock Agent ===")
 	fmt.Println("Examples:")
@@ -77,35 +87,25 @@ func main() {
 	fmt.Println("  quit or exit")
 	fmt.Println()
 
-	for {
-		fmt.Print("> ")
-
-		if !scanner.Scan() {
-			break
-		}
-
-		input := scanner.Text()
-
-		if strings.TrimSpace(input) == "quit" {
-			break
-		}
-		if strings.TrimSpace(input) == "exit" {
-			break
-		}
-
-		runAgentLoop(
-			ctx,
-			session,
-			state,
-			toolsResult.Tools,
-			input,
-		)
-
-		fmt.Println()
+	runtime := &AgentRuntime{
+		Events:   make(chan Event, 100),
+		State:    state,
+		Session:  session,
+		Tools:    tools,
+		Messages: state.Messages,
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	runtime.CancelFunc = cancel
+
+	// user input listener (always running)
+	go runtime.listenUserInput()
+
+	// main event loop (blocks forever)
+	runtime.eventLoop(ctx)
 }
 
-func runAgentLoop(
+func runAgentLoop_bk(
 	ctx context.Context,
 	session *mcp.ClientSession,
 	state *AgentState,

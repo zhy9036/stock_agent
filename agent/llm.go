@@ -267,3 +267,117 @@ RULES:
 
 	return &parsed, nil
 }
+
+// streaming LLM call
+func AskLLMStream(
+	ctx context.Context,
+	tools []*mcp.Tool,
+	messages []Message,
+	onToken func(string),
+) (*LLMResponse, error) {
+
+	var toolDescriptions strings.Builder
+
+	for _, t := range tools {
+		toolDescriptions.WriteString(
+			fmt.Sprintf("- %s : %s\n", t.Name, t.Description),
+		)
+	}
+
+	systemPrompt := fmt.Sprintf(`...same prompt...%s`, toolDescriptions.String())
+
+	var chatMessages []openai.ChatCompletionMessageParamUnion
+	chatMessages = append(chatMessages, openai.SystemMessage(systemPrompt))
+
+	for _, m := range messages {
+		switch m.Role {
+		case "user":
+			chatMessages = append(chatMessages, openai.UserMessage(m.Content))
+		case "assistant":
+			chatMessages = append(chatMessages, openai.AssistantMessage(m.Content))
+		case "system":
+			chatMessages = append(chatMessages, openai.SystemMessage(m.Content))
+		case "tool":
+			chatMessages = append(chatMessages, openai.UserMessage("Tool result:\n"+m.Content))
+		}
+	}
+
+	stream := client.Chat.Completions.NewStreaming(
+		ctx,
+		openai.ChatCompletionNewParams{
+			Model:       CONFIG.ModelID,
+			Messages:    chatMessages,
+			Temperature: openai.Float(0.1),
+			ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
+				OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
+					Type: "json_schema",
+					JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+						Name: "agent_response",
+						Schema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"done":         map[string]any{"type": "boolean"},
+								"final_answer": map[string]any{"type": "string"},
+								"tool_call": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"name": map[string]any{"type": "string"},
+										"args": map[string]any{"type": "object"},
+									},
+									"required":             []string{"name", "args"},
+									"additionalProperties": false,
+								},
+							},
+							"required":             []string{"done"},
+							"additionalProperties": false,
+						},
+						Strict: openai.Bool(true),
+					},
+				},
+			},
+		},
+	)
+
+	var buffer strings.Builder
+
+	for stream.Next() {
+		chunk := stream.Current()
+
+		// delta content (token stream)
+		if len(chunk.Choices) > 0 {
+			delta := chunk.Choices[0].Delta.Content
+			if delta != "" {
+				buffer.WriteString(delta)
+
+				// optional: realtime UI streaming
+				if onToken != nil {
+					onToken(delta)
+				}
+			}
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+
+	content := strings.TrimSpace(buffer.String())
+
+	Debug("STREAM FINAL:\n%s", content)
+
+	var parsed LLMResponse
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return nil, fmt.Errorf("invalid streamed json: %w", err)
+	}
+
+	// validations (same as before)
+	if parsed.Done && parsed.ToolCall != nil {
+		return nil, fmt.Errorf("invalid response: done=true with tool_call")
+	}
+
+	if !parsed.Done && parsed.ToolCall == nil {
+		return nil, fmt.Errorf("invalid response: neither done nor tool_call")
+	}
+
+	return &parsed, nil
+}

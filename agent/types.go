@@ -25,3 +25,18 @@ type LLMResponse struct {
 	FinalAnswer string       `json:"final_answer,omitempty"`
 	ToolCall    *LLMToolCall `json:"tool_call,omitempty"`
 }
+type EventType string
+
+const (
+	EventToken     EventType = "token"
+	EventUserInput EventType = "user_input"
+	EventToolCall  EventType = "tool_call"
+	EventToolDone  EventType = "tool_done"
+	EventCancel    EventType = "cancel"
+	EventDone      EventType = "done"
+)
+
+type Event struct {
+	Type EventType
+	Data any
+}
