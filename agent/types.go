@@ -34,6 +34,7 @@ const (
 	EventToolDone  EventType = "tool_done"
 	EventCancel    EventType = "cancel"
 	EventDone      EventType = "done"
+	EventShutdown  EventType = "shutdown"
 )
 
 type Event struct {

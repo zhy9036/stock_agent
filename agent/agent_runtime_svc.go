@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -43,6 +44,7 @@ func (r *AgentRuntime) runLLM(ctx context.Context) {
 		)
 
 		if err != nil {
+			fmt.Println("error: ", err.Error())
 			r.Events <- Event{
 				Type: EventDone,
 				Data: err,
@@ -50,18 +52,24 @@ func (r *AgentRuntime) runLLM(ctx context.Context) {
 			return
 		}
 
-		r.Events <- Event{
-			Type: EventToolCall,
-			Data: resp,
+		if resp.ToolCall != nil {
+			r.Events <- Event{
+				Type: EventToolCall,
+				Data: resp,
+			}
 		}
+
 	}()
 }
 
 func (r *AgentRuntime) eventLoop(ctx context.Context) {
 
-	r.runLLM(ctx)
+	// r.runLLM(ctx)
 
 	var buffer strings.Builder
+
+	// done := make(chan int)
+	// uiOn := false
 
 	for evt := range r.Events {
 
@@ -72,8 +80,43 @@ func (r *AgentRuntime) eventLoop(ctx context.Context) {
 		// -------------------------
 		case EventToken:
 			token := evt.Data.(string)
-			fmt.Println("llm response: ", token)
 			buffer.WriteString(token)
+
+			// only print when we have a complete valid JSON
+			if json.Valid([]byte(buffer.String())) {
+				// done <- 1
+				var resp LLMResponse
+
+				err := json.Unmarshal([]byte(buffer.String()), &resp)
+				if err != nil {
+					// optional: log malformed JSON
+					return
+				}
+				if resp.Done {
+					fmt.Println(resp.FinalAnswer)
+					fmt.Print("> ")
+				}
+				buffer.Reset()
+				// } else {
+				// 	if !uiOn {
+				// 		uiOn = true
+				// 		go func() {
+				// 			dots := []string{"", ".", "..", "..."}
+				// 			i := 0
+				// 			for {
+				// 				select {
+				// 				case <-done:
+				// 					fmt.Print("\r            \r")
+				// 					return
+				// 				default:
+				// 					fmt.Printf("\rthinking%s", dots[i%len(dots)])
+				// 					time.Sleep(300 * time.Millisecond)
+				// 					i++
+				// 				}
+				// 			}
+				// 		}()
+				// 	}
+			}
 
 		// -------------------------
 		// USER INTERRUPT
@@ -81,17 +124,12 @@ func (r *AgentRuntime) eventLoop(ctx context.Context) {
 		case EventUserInput:
 			input := evt.Data.(string)
 
-			input = strings.Trim(input, " ")
-			if input == "exit" || input == "quit" {
-				return
-			}
-
 			fmt.Println("\n\n🧑 User interrupt:", input)
 
 			// cancel current LLM
-			if r.CancelFunc != nil {
-				r.CancelFunc()
-			}
+			// if r.CancelFunc != nil {
+			// 	r.CancelFunc()
+			// }
 
 			// inject new user message
 			r.Messages = append(r.Messages, Message{
@@ -99,8 +137,7 @@ func (r *AgentRuntime) eventLoop(ctx context.Context) {
 				Content: input,
 			})
 
-			// restart LLM immediately
-			go r.runLLM(ctx)
+			r.runLLM(ctx)
 
 		// -------------------------
 		// TOOL CALL OR FINAL OUTPUT
@@ -113,6 +150,7 @@ func (r *AgentRuntime) eventLoop(ctx context.Context) {
 			if resp.Done {
 
 				fmt.Println("\n\n✅ FINAL:", resp.FinalAnswer)
+				fmt.Println("\n\n✅ tool call:", resp.ToolCall)
 
 				r.Messages = append(r.Messages, Message{
 					Role:    "assistant",
@@ -162,6 +200,9 @@ func (r *AgentRuntime) eventLoop(ctx context.Context) {
 		case EventDone:
 			fmt.Println("\n\nAgent finished.")
 			// return
+		case EventShutdown:
+			fmt.Println("\n Bye!")
+			return
 		}
 	}
 }
@@ -181,7 +222,7 @@ func (r *AgentRuntime) listenUserInput() {
 		}
 
 		if text == "exit" || text == "quit" {
-			r.Events <- Event{Type: EventDone}
+			r.Events <- Event{Type: EventShutdown}
 			return
 		}
 
